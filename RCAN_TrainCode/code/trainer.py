@@ -30,7 +30,7 @@ class Trainer():
         self.error_last = 1e8
 
     def train(self):
-        self.scheduler.step()
+        self.scheduler.step()   # 更新学习率
         self.loss.step()
         epoch = self.scheduler.last_epoch + 1
         lr = self.scheduler.get_lr()[0]
@@ -48,9 +48,10 @@ class Trainer():
             timer_model.tic()
 
             self.optimizer.zero_grad()
-            sr = self.model(lr, idx_scale)
+            sr = self.model(lr, idx_scale)    #RCAN模型
             loss = self.loss(sr, hr)
             if loss.item() < self.args.skip_threshold * self.error_last:
+                # print('======================================')
                 loss.backward()
                 self.optimizer.step()
             else:
@@ -72,6 +73,15 @@ class Trainer():
 
         self.loss.end_log(len(self.loader_train))
         self.error_last = self.loss.log[-1, -1]
+
+        # 保存整个模型
+        # path = ('/export/liuzhe/program2/RCAN/RCAN_TrainCode/experiment/mid_model/epoch_{}.pt'.format(epoch))  # 最终参数模型
+        # torch.save(self.model, path)
+
+        # 模型的断点保存
+        path = ('/export/liuzhe/program2/RCAN/RCAN_TrainCode/experiment/mid_model/model_state_dict/epoch_{}.pt'.format(epoch))
+        state = {'net': self.model.state_dict(), 'optimizer': self.optimizer.state_dict(), 'epoch': epoch}
+        torch.save(state, path)
 
     def test(self):
         epoch = self.scheduler.last_epoch + 1
@@ -95,6 +105,9 @@ class Trainer():
 
                     sr = self.model(lr, idx_scale)
                     sr = utility.quantize(sr, self.args.rgb_range)
+                    # print('\n')
+                    # print(lr.shape)
+                    # print(hr.shape)
 
                     save_list = [sr]
                     if not no_eval:
