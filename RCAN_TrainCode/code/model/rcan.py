@@ -1,6 +1,10 @@
 from model import common
 
 import torch.nn as nn
+import torch
+import numpy as np
+
+import cv2
 
 def make_model(args, parent=False):
     return RCAN(args)
@@ -79,10 +83,15 @@ class RCAN(nn.Module):
         # RGB mean for DIV2K
         rgb_mean = (0.4488, 0.4371, 0.4040)
         rgb_std = (1.0, 1.0, 1.0)
+        # self.sub_mean = common.MeanShift(args.rgb_range, rgb_mean, rgb_std)
         self.sub_mean = common.MeanShift(args.rgb_range, rgb_mean, rgb_std)
-        
+
+        # add deal graycode layer
+        # self.models_graycode = commen.convert_graycode
+
         # define head module
-        modules_head = [conv(args.n_colors, n_feats, kernel_size)]
+        # modules_head = [conv(args.n_colors, n_feats, kernel_size)]  # (3,64,3 )
+        modules_head = [conv(8, n_feats, kernel_size)]  # (3,64,3 )
 
         # define body module
         modules_body = [
@@ -95,8 +104,8 @@ class RCAN(nn.Module):
         # define tail module
         modules_tail = [
             common.Upsampler(conv, scale, n_feats, act=False),
-            conv(n_feats, args.n_colors, kernel_size)]
-
+            # conv(n_feats, args.n_colors, kernel_size)]
+            conv(n_feats, 8, kernel_size)]
         self.add_mean = common.MeanShift(args.rgb_range, rgb_mean, rgb_std, 1)
 
         self.head = nn.Sequential(*modules_head)
@@ -104,16 +113,59 @@ class RCAN(nn.Module):
         self.tail = nn.Sequential(*modules_tail)
 
     def forward(self, x):
-        x = self.sub_mean(x)
-        x = self.head(x)
 
+        # print(type(x.cpu().detach().data.numpy()))
+        # torch.size([16,3,48,48])
+
+        x0 = (x.cpu().detach().data.numpy()).astype("uint8")    # x转numpy
+
+        x1 = np.zeros([x0.shape[0], x0.shape[2], x0.shape[3]], dtype='uint8')
+
+        for i in range(x0.shape[0]):
+            img = x0[i, :, :, :]
+            img = np.transpose(img,(1,2,0))  
+            r, g, b = cv2.split(img)
+            img = cv2.merge([b, g, r])
+            
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2YCR_CB)
+            img_y = img[:, :, 0]
+            x1[i, :, :] = img_y
+
+        img = x1    # [16, 48, 48]的y通道图像
+
+        # 转十进制格雷码
+        img_new = (img.astype("uint8") / 2).astype("uint8")    
+        img = img.astype("uint8")
+        img_new = img ^ img_new # [16,48,48]
+
+        [h, w] = img_new.shape[1],img_new.shape[2],
+
+        image = np.empty((x0.shape[0], 8, h, w), dtype=np.uint8)  # 存 余数 image[16,8,48,48]
+
+        for i in range(8):
+            image[:, i, :, :] = img_new % 2  # 转格雷码8维图像
+            # print(image[:, :, i])
+            img_new = img_new // 2  
+
+        x = torch.from_numpy(np.ascontiguousarray(image)).float()
+        # x = torch.FloatTensor(x)
+        x = x.cuda()
+
+        # print(x.shape)
+
+        # print(self.sub_mean)
+
+        # x = self.sub_mean(x)
+
+        x = self.head(x)
         res = self.body(x)
         res += x
 
         x = self.tail(res)
-        x = self.add_mean(x)
+        # x = self.add_mean(x)
+        # print(x.shape)
 
-        return x 
+        return x
 
     def load_state_dict(self, state_dict, strict=False):
         own_state = self.state_dict()
