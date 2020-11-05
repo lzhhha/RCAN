@@ -1,6 +1,10 @@
 from model import common
 
 import torch.nn as nn
+import torch
+import numpy as np
+
+import cv2
 
 def make_model(args, parent=False):
     return RCAN(args)
@@ -64,15 +68,15 @@ class ResidualGroup(nn.Module):
 class RCAN(nn.Module):
     def __init__(self, args, conv=common.default_conv):
         super(RCAN, self).__init__()
-        
+
         n_resgroups = args.n_resgroups
         n_resblocks = args.n_resblocks
         n_feats = args.n_feats
         kernel_size = 3
-        reduction = args.reduction 
+        reduction = args.reduction
         scale = args.scale[0]
         act = nn.ReLU(True)
-        
+
         # RGB mean for DIV2K 1-800
         #rgb_mean = (0.4488, 0.4371, 0.4040)
         # RGB mean for DIVFlickr2K 1-3450
@@ -85,9 +89,10 @@ class RCAN(nn.Module):
             rgb_mean = (0.4690, 0.4490, 0.4036)
         rgb_std = (1.0, 1.0, 1.0)
         self.sub_mean = common.MeanShift(args.rgb_range, rgb_mean, rgb_std)
-        
+
         # define head module
-        modules_head = [conv(args.n_colors, n_feats, kernel_size)]
+        # modules_head = [conv(args.n_colors, n_feats, kernel_size)]
+        modules_head = [conv(8, n_feats, kernel_size)]
 
         # define body module
         modules_body = [
@@ -100,7 +105,8 @@ class RCAN(nn.Module):
         # define tail module
         modules_tail = [
             common.Upsampler(conv, scale, n_feats, act=False),
-            conv(n_feats, args.n_colors, kernel_size)]
+            # conv(n_feats, args.n_colors, kernel_size)]
+            conv(n_feats, 8, kernel_size)]
 
         self.add_mean = common.MeanShift(args.rgb_range, rgb_mean, rgb_std, 1)
 
@@ -109,16 +115,120 @@ class RCAN(nn.Module):
         self.tail = nn.Sequential(*modules_tail)
 
     def forward(self, x):
-        x = self.sub_mean(x)
-        x = self.head(x)
+        # print("\n")
+        # print(x.shape)
+        # print("\n")
+        x0 = (x.cpu().detach().data.numpy()).astype("uint8")  # x转numpy     # [1, 3, 344, 288]
 
+        x1 = np.zeros([x0.shape[0], x0.shape[2], x0.shape[3]], dtype='uint8')
+        x2 = np.zeros([x0.shape[0], x0.shape[2], x0.shape[3]], dtype='uint8')
+        x3 = np.zeros([x0.shape[0], x0.shape[2], x0.shape[3]], dtype='uint8')
+
+        for i in range(x0.shape[0]):
+            img = x0[i, :, :, :]
+            img = np.transpose(img, (1, 2, 0))  # 转成[h,w,c]
+            r, g, b = cv2.split(img)
+            img = cv2.merge([b, g, r])
+            # print(img.shape)
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2YCR_CB)
+            img_y = img[:, :, 0]
+            # img_cb = img[:, :, 1]
+            # img_cr = img[:, :, 2]
+            x1[i, :, :] = img_y
+            # x2[i, :, :] = img_cb
+            # x3[i, :, :] = img_cr
+
+
+        img = x1      # [1, 48, 48]的y通道图像
+        # img_cb = x2
+        # img_cr = x3
+
+        # 转十进制格雷码
+        img_new = (img.astype("uint8") / 2).astype("uint8")  # 除2取下界等于右移位运算
+        img = img.astype("uint8")
+        img_new = img ^ img_new  # 异或运算   [16,48,48]
+
+        [h, w] = img_new.shape[1], img_new.shape[2],
+
+        image = np.empty((x0.shape[0], 8, h, w), dtype=np.uint8)  # 存 余数 image[16,8,48,48]
+
+        for i in range(8):
+            image[:, i, :, :] = img_new % 2  # 转格雷码8维图像
+            # print(image[:, :, i])
+            img_new = img_new // 2  # //除取下界
+
+        x = torch.from_numpy(np.ascontiguousarray(image)).float()
+        # img_cb = torch.from_numpy(np.ascontiguousarray(img_cb)).float()
+        # img_cr = torch.from_numpy(np.ascontiguousarray(img_cr)).float()
+
+        x = x.cuda()
+
+        x = self.head(x)
         res = self.body(x)
         res += x
-
         x = self.tail(res)
-        x = self.add_mean(x)
 
-        return x 
+        return x
+
+# class RCAN(nn.Module):
+#     def __init__(self, args, conv=common.default_conv):
+#         super(RCAN, self).__init__()
+#
+#         n_resgroups = args.n_resgroups
+#         n_resblocks = args.n_resblocks
+#         n_feats = args.n_feats
+#         kernel_size = 3
+#         reduction = args.reduction
+#         scale = args.scale[0]
+#         act = nn.ReLU(True)
+#
+#         # RGB mean for DIV2K 1-800
+#         # rgb_mean = (0.4488, 0.4371, 0.4040)
+#         # RGB mean for DIVFlickr2K 1-3450
+#         # rgb_mean = (0.4690, 0.4490, 0.4036)
+#         if args.data_train == 'DIV2K':
+#             print('Use DIV2K mean (0.4488, 0.4371, 0.4040)')
+#             rgb_mean = (0.4488, 0.4371, 0.4040)
+#         elif args.data_train == 'DIVFlickr2K':
+#             print('Use DIVFlickr2K mean (0.4690, 0.4490, 0.4036)')
+#             rgb_mean = (0.4690, 0.4490, 0.4036)
+#         rgb_std = (1.0, 1.0, 1.0)
+#         self.sub_mean = common.MeanShift(args.rgb_range, rgb_mean, rgb_std)
+#
+#         # define head module
+#         modules_head = [conv(args.n_colors, n_feats, kernel_size)]
+#
+#         # define body module
+#         modules_body = [
+#             ResidualGroup(
+#                 conv, n_feats, kernel_size, reduction, act=act, res_scale=args.res_scale, n_resblocks=n_resblocks) \
+#             for _ in range(n_resgroups)]
+#
+#         modules_body.append(conv(n_feats, n_feats, kernel_size))
+#
+#         # define tail module
+#         modules_tail = [
+#             common.Upsampler(conv, scale, n_feats, act=False),
+#             conv(n_feats, args.n_colors, kernel_size)]
+#
+#         self.add_mean = common.MeanShift(args.rgb_range, rgb_mean, rgb_std, 1)
+#
+#         self.head = nn.Sequential(*modules_head)
+#         self.body = nn.Sequential(*modules_body)
+#         self.tail = nn.Sequential(*modules_tail)
+
+    # def forward(self, x):
+    #     x = self.sub_mean(x)
+    #     x = self.head(x)
+    #
+    #     res = self.body(x)
+    #     res += x
+    #
+    #     x = self.tail(res)
+    #     x = self.add_mean(x)
+    #
+    #     return x
+
 
     def load_state_dict(self, state_dict, strict=False):
         own_state = self.state_dict()
