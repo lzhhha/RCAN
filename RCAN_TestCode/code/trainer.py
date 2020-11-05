@@ -8,6 +8,11 @@ import torch
 from torch.autograd import Variable
 from tqdm import tqdm
 
+import numpy as np
+import cv2
+from skimage import io
+import skimage.measure
+
 class Trainer():
     def __init__(self, args, loader, my_model, my_loss, ckp):
         self.args = args
@@ -77,6 +82,14 @@ class Trainer():
         epoch = self.scheduler.last_epoch + 1
         self.ckp.write_log('\nEvaluation:')
         self.ckp.add_log(torch.zeros(1, len(self.scale)))
+        # self.model.eval()
+
+        # 只加载模型参数
+        path_state_dict = "/export/liuzhe/program2/RCAN_test/RCAN_TestCode/model/model_mid/epoch_10.pt"
+        state_dict_load = torch.load(path_state_dict)
+        self.model.load_state_dict(state_dict_load['net'], False)
+        # self.model.load_state_dict(state_dict_load['net'], strict = False)
+        # self.model.cuda()
         self.model.eval()
 
         timer_test = utility.timer()
@@ -85,24 +98,67 @@ class Trainer():
                 eval_acc = 0
                 self.loader_test.dataset.set_scale(idx_scale)
                 tqdm_test = tqdm(self.loader_test, ncols=80)
-                for idx_img, (lr, hr, filename, _) in enumerate(tqdm_test):
+                for idx_img, (lr, hr, filename, hrimg, _) in enumerate(tqdm_test):
                     filename = filename[0]
                     no_eval = (hr.nelement() == 1)
+
+                    # print(hrimg.shape)      # [1, 3, 512, 512]
+                    # print(hr.shape)     # [1, 8, 512, 512]
+                    # print(lr.shape)     # [1, 3, 256, 256]
+
                     if not no_eval:
                         lr, hr = self.prepare([lr, hr])
                     else:
                         lr = self.prepare([lr])[0]
+                    from PIL import Image
+
+                    # print(hrimg.shape)      # [1, 3, 512, 512]
+                    # print("hr shape=", hr.shape)     # [1, 8, 512, 512]
+                    # print(lr.shape)     # [1, 3, 256, 256]
+
+                    # 保存原hr图像
+                    # hrimg_1 = np.transpose(hrimg.cpu().detach().data.numpy()[0],(1,2,0))
+                    # print(hrimg_1.shape)    # (512, 512, 3)
+                    # io.imsave('/export/liuzhe/program2/RCAN_test/RCAN_TestCode/SR/BI/hrimg.png', hrimg_1)    #hr图像
+
+
+                    # print(np.max(hrimg_1))   # 255
+                    # img_cr, img_cb = self.get_hr_cbcr(hrimg)
+                    img_cr, img_cb = self.get_hr_cbcr(hr)
 
                     sr = self.model(lr, idx_scale)
-                    sr = utility.quantize(sr, self.args.rgb_range)
+                    sr = self.channel_8_3(sr, img_cr, img_cb)
+                    # sr1 = sr
+
+                    # print("sr shape=", sr.shape)     # torch.Size([1, 8, 512, 512])
+                    # print(type(sr))     # <class 'torch.Tensor'>
+
+                    # 验证格雷码编码与解码，并保存图片
+                    # hr_8_3 = self.channel_8_3(hr, img_cr, img_cb)   # torch.Size([1, 3, 512, 512])
+                    # srimg = np.transpose(hr_8_3.cpu().detach().data.numpy()[0], (1, 2, 0))
+                    # io.imsave('/export/liuzhe/program2/RCAN_test/RCAN_TestCode/SR/BI/srimg.png', srimg)    # hr格雷码、反格雷码之后的图像
+                    # sr = self.channel_8_3(sr, img_cr, img_cb)  # torch.Size([1, 3, 512, 512])
+                    # srimg1 = np.transpose(sr.cpu().detach().data.numpy()[0], (1, 2, 0))
+                    # io.imsave('/export/liuzhe/program2/RCAN_test/RCAN_TestCode/SR/BI/srimg1.png', srimg1)  # lr格雷码经过超分网络、反格雷码之后的图像
+
+                    # print(np.max(srimg))
+
+                    # sr = utility.quantize(sr, self.args.rgb_range)
+
+                    # 计算psnr结果
+                    # psnr = skimage.measure.compare_psnr(srimg/255, srimg1/255, data_range=1)
+                    # psnr = skimage.measure.compare_psnr(srimg1 / 255, hrimg_1 / 255, data_range=1)
+                    # print("psnr= ", psnr)
+                    # exit(-1)
 
                     save_list = [sr]
-                    if not no_eval:
-                        eval_acc += utility.calc_psnr(
-                            sr, hr, scale, self.args.rgb_range,
-                            benchmark=self.loader_test.dataset.benchmark
-                        )
-                        save_list.extend([lr, hr])
+                    # 计算psnr
+                    # if not no_eval:
+                    #     eval_acc += utility.calc_psnr(
+                    #         sr, hr, scale, self.args.rgb_range,
+                    #         benchmark=self.loader_test.dataset.benchmark
+                    #     )
+                    #     save_list.extend([lr, hr])
 
                     if self.args.save_results:
                         #self.ckp.save_results(filename, save_list, scale)
@@ -128,8 +184,12 @@ class Trainer():
 
     def prepare(self, l, volatile=False):
         device = torch.device('cpu' if self.args.cpu else 'cuda')
+
+        # print(self.args.precision)
         def _prepare(tensor):
+
             if self.args.precision == 'half': tensor = tensor.half()
+
             return tensor.to(device)
            
         return [_prepare(_l) for _l in l]
@@ -141,4 +201,76 @@ class Trainer():
         else:
             epoch = self.scheduler.last_epoch + 1
             return epoch >= self.args.epochs
+
+    def get_hr_cbcr(self, hr):
+
+        # [1,3,512,512]
+        x0 = (hr.cpu().detach().data.numpy()).astype("uint8")  # x转numpy
+
+        x1 = np.zeros([x0.shape[0], x0.shape[2], x0.shape[3]], dtype='uint8')
+        x2 = np.zeros([x0.shape[0], x0.shape[2], x0.shape[3]], dtype='uint8')
+        x3 = np.zeros([x0.shape[0], x0.shape[2], x0.shape[3]], dtype='uint8')
+
+        for i in range(x0.shape[0]):
+            img = x0[i, :, :, :]
+            img = np.transpose(img, (1, 2, 0))  # 转成[h,w,c]
+            r, g, b = cv2.split(img)
+            img = cv2.merge([b, g, r])
+            # print(img.shape)
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2YCR_CB)
+            # img_y = img[:, :, 0]
+            img_cr = img[:, :, 1]
+            img_cb = img[:, :, 2]
+
+            # x1[i, :, :] = img_y
+            x2[i, :, :] = img_cr
+            x3[i, :, :] = img_cb
+
+        # print(x2.shape)
+        return x2, x3
+
+    def channel_8_3(self, sr, img_cr, img_cb):
+        # [1, 8, 512, 512]
+        x_0 = (sr.cpu().detach().data.numpy()).astype("uint8")  # x转numpy
+
+        x_1 = np.zeros([x_0.shape[0], x_0.shape[2], x_0.shape[3]], dtype='uint8')   # [1, 512 ,512]
+
+        # x_2 = np.zeros([3, x_0.shape[2], x_0.shape[3]], dtype = np.uint8)   # [3, h ,w]
+
+        x_finally = np.zeros([x_0.shape[0], 3, x_0.shape[2], x_0.shape[3]], dtype='uint8')   # [1,3,512,512]
+
+        for i in range(x_0.shape[0]):
+            img1 = x_0[i, :, :, :]    # [8, 344 ,228]
+            x_1[x_0.shape[0]-1, :, :] = img1[0, :, :]*1 + img1[1, :, :]*2 + img1[2, :, :]*4 + img1[3, :, :]*8 + img1[4, :, :]*16 + img1[5, :, :]*32 + img1[6, :, :]*64 + img1[7, :, :]*128
+
+        img_1 = x_1     # [1, 512, 512]
+
+        # 十进制格雷码转二进制的十进制数
+        img_2 = (img_1.astype("uint8") / 2).astype("uint8")  # 除2取下界等于右移位运算
+        img = img_1.astype("uint8")
+        img_2 = img ^ img_2  # 异或运算   [1, 512, 512]
+
+        x_finally[:, 0, :, :] = img_2
+        x_finally[:, 1, :, :] = img_cr
+        x_finally[:, 2, :, :] = img_cb      # x_finally.shape = [1,3,512,512]
+
+        # ycrcb转rgb
+        a = x_finally[0, :, :, :]   # [3, h, w]
+        a = np.transpose(a, (1, 2, 0))  # 转成  [512, 512, 3]
+
+        # y, cb, cr = cv2.split(img)
+        # img = cv2.merge([y, cr, cb])
+        img = cv2.cvtColor(a, cv2.COLOR_YCrCb2RGB)  # [512,512,3]
+        # b,g,r = cv2.split(img)
+        # img = cv2.merge([r,g,b])
+        img = np.transpose(img, (2, 0, 1))  # 转成[3,512,512]
+        for i in range(x_0.shape[0]):
+            x_finally[i, :, :, :] = img
+
+        x_finally = torch.from_numpy(np.ascontiguousarray(x_finally)).float()   # [1,3,512,512]
+        x_finally = x_finally.cuda()
+        # print(x_finally.shape)
+
+        return x_finally
+
 
