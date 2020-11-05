@@ -7,6 +7,7 @@ import scipy.misc as misc
 
 import torch
 import torch.utils.data as data
+import cv2
 
 class SRData(data.Dataset):
     def __init__(self, args, train=True, benchmark=False):
@@ -89,8 +90,17 @@ class SRData(data.Dataset):
         lr, hr, filename = self._load_file(idx)
         lr, hr = self._get_patch(lr, hr)
         lr, hr = common.set_channel([lr, hr], self.args.n_colors)
+        hrimg = hr
+
+        # print(hrimg.shape)  # (w,h,3)
+        # print(lr.shape)     # (w/2 ,h/2 ,3)
+        hrimg = np.transpose(hrimg, [2, 0, 1])
+
+        # hr = self.hr_convert(hr)
         lr_tensor, hr_tensor = common.np2Tensor([lr, hr], self.args.rgb_range)
-        return lr_tensor, hr_tensor, filename
+        # print("222222")
+        # print(hr.shape)
+        return lr_tensor, hr_tensor, filename, hrimg
 
     def __len__(self):
         return len(self.images_hr)
@@ -135,4 +145,32 @@ class SRData(data.Dataset):
 
     def set_scale(self, idx_scale):
         self.idx_scale = idx_scale
+
+    def hr_convert(self, hr):
+
+        img = hr
+        r, g, b = cv2.split(img)
+        img = cv2.merge([b, g, r])
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2YCR_CB)
+        img_y = img[:, :, 0]
+        img = np.array(img_y)
+
+        img_new = (img.astype("uint8") / 2).astype("uint8")  # 除2取下界等于右移位运算
+        img = img.astype("uint8")
+        img_new = img ^ img_new  # 异或运算
+        # img_new = np.array(img_new, dtype= np.uint8)
+        # print(type(img_new))
+        [h, w] = img_new.shape
+
+        image = np.empty((h, w, 8), dtype=np.uint8)  # 存 余数
+        # list = np.empty((h, w, 8), dtype=np.uint8)  # 存 除后取下界结果
+
+        for i in range(8):
+            # list[:, :, i] = img_new // 2   # 除取下界
+            # print(list[:,:,i])
+            image[:, :, i] = img_new % 2  # 转格雷码8维图像
+            # cv2.imwrite("./graycode_result/{}_{}.png".format(value,i), image[:,:,i]*255)
+            # print(image[:, :, i])
+            img_new = img_new // 2
+        return image    # [h,w,8]
 
