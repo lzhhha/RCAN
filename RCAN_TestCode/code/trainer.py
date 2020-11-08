@@ -12,6 +12,7 @@ import numpy as np
 import cv2
 from skimage import io
 import skimage.measure
+from PIL import Image
 
 class Trainer():
     def __init__(self, args, loader, my_model, my_loss, ckp):
@@ -85,7 +86,7 @@ class Trainer():
         # self.model.eval()
 
         # 只加载模型参数
-        path_state_dict = "/export/liuzhe/program2/RCAN_test/RCAN_TestCode/model/model_mid/epoch_10.pt"
+        path_state_dict = "/export/liuzhe/program2/RCAN_test/RCAN_TestCode/model/model_mid/epoch_8.pt"
         state_dict_load = torch.load(path_state_dict)
         self.model.load_state_dict(state_dict_load['net'], False)
         # self.model.load_state_dict(state_dict_load['net'], strict = False)
@@ -98,7 +99,7 @@ class Trainer():
                 eval_acc = 0
                 self.loader_test.dataset.set_scale(idx_scale)
                 tqdm_test = tqdm(self.loader_test, ncols=80)
-                for idx_img, (lr, hr, filename, hrimg, _) in enumerate(tqdm_test):
+                for idx_img, (lr, hr, filename, hrimg, _) in enumerate(tqdm_test):      #hr编码后的tensor，hrimg原hr图像
                     filename = filename[0]
                     no_eval = (hr.nelement() == 1)
 
@@ -110,17 +111,15 @@ class Trainer():
                         lr, hr = self.prepare([lr, hr])
                     else:
                         lr = self.prepare([lr])[0]
-                    from PIL import Image
 
                     # print(hrimg.shape)      # [1, 3, 512, 512]
                     # print("hr shape=", hr.shape)     # [1, 8, 512, 512]
                     # print(lr.shape)     # [1, 3, 256, 256]
 
                     # 保存原hr图像
-                    # hrimg_1 = np.transpose(hrimg.cpu().detach().data.numpy()[0],(1,2,0))
+                    # hrimg_1 = np.transpose(hrimg.cpu().detach().data.numpy()[0], (1, 2, 0))
                     # print(hrimg_1.shape)    # (512, 512, 3)
                     # io.imsave('/export/liuzhe/program2/RCAN_test/RCAN_TestCode/SR/BI/hrimg.png', hrimg_1)    #hr图像
-
 
                     # print(np.max(hrimg_1))   # 255
                     # img_cr, img_cb = self.get_hr_cbcr(hrimg)
@@ -140,6 +139,7 @@ class Trainer():
                     # sr = self.channel_8_3(sr, img_cr, img_cb)  # torch.Size([1, 3, 512, 512])
                     # srimg1 = np.transpose(sr.cpu().detach().data.numpy()[0], (1, 2, 0))
                     # io.imsave('/export/liuzhe/program2/RCAN_test/RCAN_TestCode/SR/BI/srimg1.png', srimg1)  # lr格雷码经过超分网络、反格雷码之后的图像
+                    # exit(-1)
 
                     # print(np.max(srimg))
 
@@ -153,12 +153,12 @@ class Trainer():
 
                     save_list = [sr]
                     # 计算psnr
-                    # if not no_eval:
-                    #     eval_acc += utility.calc_psnr(
-                    #         sr, hr, scale, self.args.rgb_range,
-                    #         benchmark=self.loader_test.dataset.benchmark
-                    #     )
-                    #     save_list.extend([lr, hr])
+                    if not no_eval:
+                        eval_acc += utility.calc_psnr(
+                            sr, hr, scale, self.args.rgb_range,
+                            # benchmark=self.loader_test.dataset.benchmark
+                        )
+                        save_list.extend([lr, hr])
 
                     if self.args.save_results:
                         #self.ckp.save_results(filename, save_list, scale)
@@ -233,22 +233,66 @@ class Trainer():
         # [1, 8, 512, 512]
         x_0 = (sr.cpu().detach().data.numpy()).astype("uint8")  # x转numpy
 
+        x_bin = np.zeros([x_0.shape[1], x_0.shape[2], x_0.shape[3]], dtype='uint8')  # [8, h, w]
+
         x_1 = np.zeros([x_0.shape[0], x_0.shape[2], x_0.shape[3]], dtype='uint8')   # [1, 512 ,512]
 
         # x_2 = np.zeros([3, x_0.shape[2], x_0.shape[3]], dtype = np.uint8)   # [3, h ,w]
 
         x_finally = np.zeros([x_0.shape[0], 3, x_0.shape[2], x_0.shape[3]], dtype='uint8')   # [1,3,512,512]
 
-        for i in range(x_0.shape[0]):
-            img1 = x_0[i, :, :, :]    # [8, 344 ,228]
-            x_1[x_0.shape[0]-1, :, :] = img1[0, :, :]*1 + img1[1, :, :]*2 + img1[2, :, :]*4 + img1[3, :, :]*8 + img1[4, :, :]*16 + img1[5, :, :]*32 + img1[6, :, :]*64 + img1[7, :, :]*128
+        h, w = x_0.shape[2], x_0.shape[3]
+        for k in range(x_0.shape[0]):
+            img1 = x_0[k, :, :, :]    # [8, 344 ,228]
+            # ige = np.transpose(img1, (1, 2, 0))
+            # for i in range(7, 0, -1):
+            #     cv2.imwrite("/export/liuzhe/program2/RCAN_test/RCAN_TestCode/SR/New Folder/{}.png".format(i), ige[:, :, i]* 255)
+            # exit(-1)
 
-        img_1 = x_1     # [1, 512, 512]
+            # 十进制格雷码转二进制的十进制数
+            for i in range(h):
+                for j in range(w):
+                    lst = []
+                    for s in range(8):
+                        lst.append(str(img1[s, i, j]))
+                    n = ''.join(lst)    # str从低位到高位
 
-        # 十进制格雷码转二进制的十进制数
+                    # n = str(np.binary_repr(img1[:, i, j], 8))   # str从低位到高位
+                    n = str_reverse1(n)    # str从高位到低位
+                    result = ''
+                    for q in range(8):  # 格雷码转二进制码
+                        if q != 0:
+                            temp = 1
+                            if result[q - 1] == n[q]:
+                                temp = 0
+                            result += str(temp)
+                        else:
+                            result += str(n[0])
+
+                    result = str_reverse1(result)  # 从低位到高位
+                    for m in range(8):
+                        x_bin[m, i, j] = result[m]      # [8, h ,w] 解码后的二进制码
+
+            x_1[x_0.shape[0]-1, :, :] = x_bin[0, :, :]*1 + x_bin[1, :, :]*2 + x_bin[2, :, :]*4 + x_bin[3, :, :]*8 + x_bin[4, :, :]*16 + x_bin[5, :, :]*32 + x_bin[6, :, :]*64 + x_bin[7, :, :]*128
+            # x_1[x_0.shape[0]-1, :, :] = img1[0, :, :]*128 + img1[0, :, :]*64 + img1[0, :, :]*32 + img1[0, :, :]*16 + img1[0, :, :]*8 + img1[0, :, :]*4 + img1[0, :, :]*2
+        img_1 = x_1     # [1, 512, 512]     (y_decode.png)
+
+        # # 保存图像
+        # ige = np.transpose(img_1, (1, 2, 0))
+        # print("1111111")
+        # print(ige.shape)
+        # io.imsave("/export/liuzhe/program2/RCAN_test/RCAN_TestCode/SR/BI/y_decode.png", ige)
+        # img_cb = np.transpose(img_cb, (1, 2, 0))
+        # img_cr = np.transpose(img_cr, (1, 2, 0))
+        # io.imsave("/export/liuzhe/program2/RCAN_test/RCAN_TestCode/SR/BI/cb.png", img_cb)
+        # io.imsave("/export/liuzhe/program2/RCAN_test/RCAN_TestCode/SR/BI/cr.png", img_cr)
+
+        img_2 = img_1
+
+        '''# 十进制格雷码转二进制的十进制数
         img_2 = (img_1.astype("uint8") / 2).astype("uint8")  # 除2取下界等于右移位运算
         img = img_1.astype("uint8")
-        img_2 = img ^ img_2  # 异或运算   [1, 512, 512]
+        img_2 = img ^ img_2  # 异或运算   [1, 512, 512]'''
 
         x_finally[:, 0, :, :] = img_2
         x_finally[:, 1, :, :] = img_cr
@@ -272,5 +316,9 @@ class Trainer():
         # print(x_finally.shape)
 
         return x_finally
+
+def str_reverse1(s):
+
+        return s[::-1]
 
 
